@@ -19,7 +19,7 @@ vectorstore = PineconeVectorStore(
     index_name="langchain-docs-2025", embedding=embeddings
 )
 # Initialize chat model
-model = init_chat_model("gpt-5.2", model_provider="openai")
+model = init_chat_model("gpt-4.1-mini", model_provider="openai")
 
 
 @tool(response_format="content_and_artifact")
