@@ -1,3 +1,4 @@
+
 import os
 from operator import itemgetter
 
@@ -13,22 +14,46 @@ load_dotenv()
 
 print("Initializing components...")
 
-embeddings = OpenAIEmbeddings(
-        model="text-embedding-3-large",
-        dimensions=1024,
-        openai_api_key=os.environ.get("OPENAI_API_KEY"),
-    )
-llm = ChatOpenAI()
+# ============================================================
+# CONFIGURATION
+# Must match the index and embedding model used during ingestion
+# ============================================================
+INDEX_NAME = "nmit-test-vectors"
+EMBEDDING_MODEL = "text-embedding-3-large"
+EMBEDDING_DIMENSIONS = 1024
 
-vectorstore = PineconeVectorStore(
-    index_name=os.environ["INDEX_NAME"], embedding=embeddings
+# 1. Initialize embeddings
+embeddings = OpenAIEmbeddings(
+    model=EMBEDDING_MODEL,
+    dimensions=EMBEDDING_DIMENSIONS,
+    openai_api_key=os.environ.get("OPENAI_API_KEY"),
 )
 
-retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+# 2. Initialize the LLM
+llm = ChatOpenAI(
+    model="gpt-6.1-terra",
+    api_key=os.environ["OPENAI_API_KEY"],
+)
 
+# 3. Connect to the same Pinecone index used during ingestion
+vectorstore = PineconeVectorStore(
+    index_name=INDEX_NAME,
+    embedding=embeddings,
+)
+
+# 4. Create the retriever
+retriever = vectorstore.as_retriever(
+    search_kwargs={"k": 3}
+)
+
+# 5. Create the prompt template
 prompt_template = ChatPromptTemplate.from_template(
-    """Answer the question based only on the following context:
+    """Answer the question based only on the following context.
 
+If the context does not contain enough information, say that you
+don't have enough information to answer.
+
+Context:
 {context}
 
 Question: {question}
@@ -42,55 +67,37 @@ def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs)
 
 
-# ============================================================================
-# IMPLEMENTATION 1: Without LCEL (Simple Function-Based Approach)
-# ============================================================================
+# ============================================================
+# IMPLEMENTATION 1: WITHOUT LCEL
+# ============================================================
 def retrieval_chain_without_lcel(query: str):
-    """
-    Simple retrieval chain without LCEL.
-    Manually retrieves documents, formats them, and generates a response.
+    """Retrieve documents and answer manually."""
 
-    Limitations:
-    - Manual step-by-step execution
-    - No built-in streaming support
-    - No async support without additional code
-    - Harder to compose with other chains
-    - More verbose and error-prone
-    """
-    # Step 1: Retrieve relevant documents
+    # Step 1: Retrieve relevant documents from Pinecone
     docs = retriever.invoke(query)
 
-    # Step 2: Format documents into context string
+    # Step 2: Format documents into context
     context = format_docs(docs)
 
-    # Step 3: Format the prompt with context and question
-    messages = prompt_template.format_messages(context=context, question=query)
+    # Step 3: Build the prompt
+    messages = prompt_template.format_messages(
+        context=context,
+        question=query,
+    )
 
-    # Step 4: Invoke LLM with the formatted messages
+    # Step 4: Send the prompt to the LLM
     response = llm.invoke(messages)
 
-    # Step 5: Return the content
+    # Step 5: Return the answer
     return response.content
 
 
-# ============================================================================
-# IMPLEMENTATION 2: With LCEL (LangChain Expression Language) - BETTER APPROACH
-# ============================================================================
+# ============================================================
+# IMPLEMENTATION 2: WITH LCEL
+# ============================================================
 def create_retrieval_chain_with_lcel():
-    """
-    Create a retrieval chain using LCEL (LangChain Expression Language).
-    Returns a chain that can be invoked with {"question": "..."}
+    """Build a composable RAG chain using LCEL."""
 
-    Advantages over non-LCEL approach:
-    - Declarative and composable: Easy to chain operations with pipe operator (|)
-    - Built-in streaming: chain.stream() works out of the box
-    - Built-in async: chain.ainvoke() and chain.astream() available
-    - Batch processing: chain.batch() for multiple inputs
-    - Type safety: Better integration with LangChain's type system
-    - Less code: More concise and readable
-    - Reusable: Chain can be saved, shared, and composed with other chains
-    - Better debugging: LangChain provides better observability tools
-    """
     retrieval_chain = (
         RunnablePassthrough.assign(
             context=itemgetter("question") | retriever | format_docs
@@ -99,50 +106,56 @@ def create_retrieval_chain_with_lcel():
         | llm
         | StrOutputParser()
     )
+
     return retrieval_chain
 
 
+# ============================================================
+# MAIN
+# ============================================================
 if __name__ == "__main__":
+
     print("Retrieving...")
+    query = "What is Pinecone in machine learning?"
 
-    # Query
-    query = "what is Pinecone in machine learning?"
-
-    # ========================================================================
-    # Option 0: Raw invocation without RAG
-    # ========================================================================
+    # --------------------------------------------------------
+    # OPTION 0: Raw LLM (no RAG)
+    # --------------------------------------------------------
     print("\n" + "=" * 70)
     print("IMPLEMENTATION 0: Raw LLM Invocation (No RAG)")
     print("=" * 70)
-    result_raw = llm.invoke([HumanMessage(content=query)])
+
+    result_raw = llm.invoke(
+        [HumanMessage(content=query)]
+    )
+
     print("\nAnswer:")
     print(result_raw.content)
 
-    # ========================================================================
-    # Option 1: Use implementation WITHOUT LCEL
-    # ========================================================================
+    # --------------------------------------------------------
+    # OPTION 1: RAG WITHOUT LCEL
+    # --------------------------------------------------------
     print("\n" + "=" * 70)
     print("IMPLEMENTATION 1: Without LCEL")
     print("=" * 70)
+
     result_without_lcel = retrieval_chain_without_lcel(query)
+
     print("\nAnswer:")
     print(result_without_lcel)
 
-    # ========================================================================
-    # Option 2: Use implementation WITH LCEL (Better Approach)
-    # ========================================================================
+    # --------------------------------------------------------
+    # OPTION 2: RAG WITH LCEL
+    # --------------------------------------------------------
     print("\n" + "=" * 70)
-    print("IMPLEMENTATION 2: With LCEL - Better Approach")
-    print("=" * 70)
-    print("Why LCEL is better:")
-    print("- More concise and declarative")
-    print("- Built-in streaming: chain.stream()")
-    print("- Built-in async: chain.ainvoke()")
-    print("- Easy to compose with other chains")
-    print("- Better for production use")
+    print("IMPLEMENTATION 2: With LCEL")
     print("=" * 70)
 
     chain_with_lcel = create_retrieval_chain_with_lcel()
-    result_with_lcel = chain_with_lcel.invoke({"question": query})
+
+    result_with_lcel = chain_with_lcel.invoke(
+        {"question": query}
+    )
+
     print("\nAnswer:")
     print(result_with_lcel)
